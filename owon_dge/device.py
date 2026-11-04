@@ -173,6 +173,12 @@ class Dge2070:
                 if invalid:
                     raise ValueError(
                         f"{invalid} no existe(n) en la forma de onda {func}")
+            # Anchura, ciclo y frecuencia están ligados: con un periodo nuevo
+            # más corto, una anchura que ya no cabe (> P − 2·flanco mínimo) hace
+            # que el equipo rechace la frecuencia. Se reduce antes (al 40 % del
+            # periodo nuevo); si se pide otra anchura se escribe después.
+            if func == "PULS" and kw.get("freq"):
+                self._shrink_width_for(ch, float(kw["freq"]))
             # Notas del firmware (medidas en el equipo):
             #  - SYST:ERR? es pegajoso/no fiable -> se verifica releyendo.
             #  - Un comando justo tras *CLS se pierde -> no usar *CLS.
@@ -199,6 +205,19 @@ class Dge2070:
                     raise DeviceError(
                         f"{name}: pedido {kw[name]:g}, el equipo tiene {got} "
                         "(fuera de rango o dependiente de otro parámetro)")
+
+    MIN_EDGE_S = 15e-9
+
+    def _shrink_width_for(self, ch: int, freq: float) -> None:
+        """Si la anchura actual no cabe en el periodo ``1/freq``, la acorta."""
+        period = 1.0 / freq
+        width = self._read_field(ch, "width")
+        if width is None or width <= period - 2 * self.MIN_EDGE_S - 1e-9:
+            return
+        safe = 0.4 * period
+        time.sleep(self.t.settle_s)
+        self.t.write(f"SOUR{ch}:PULS:WIDT {_fmt('width', safe)}")
+        time.sleep(self.t.settle_s)
 
     def _width_via_duty(self, ch, kw) -> bool:
         """Anchuras justo en el límite sólo entran como ciclo de trabajo."""

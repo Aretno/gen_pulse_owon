@@ -30,6 +30,9 @@ class FakeTransport:
                 self.ch[ch][key] = {"PULS": "PUL"}.get(val, val)
             elif key == "PHAS:ADJ":
                 self.ch[ch][key] = math.radians(float(val.rstrip("DEG")))
+            elif key == "FREQ" and self.ch[ch]["FUNC:SHAP"] == "PUL" and (
+                    self.ch[ch]["PULS:WIDT"] > 1.0 / float(val) - 30e-9):
+                pass                       # como el equipo: anchura y frecuencia ligadas
             elif val.endswith("ns"):
                 self.ch[ch][key] = float(val[:-2]) * 1e-9
             else:
@@ -90,6 +93,25 @@ class DeviceTests(unittest.TestCase):
     def test_unknown_function(self):
         with self.assertRaises(ValueError):
             self.dev.set_pulse(1, function="TRIANGLE")
+
+    def test_frequency_change_shrinks_a_width_that_no_longer_fits(self):
+        self.t.ch[1]["PULS:WIDT"] = 9e-7                       # 900 ns a 1 MHz
+        self.dev.set_pulse(1, freq=2e6)                        # P = 500 ns
+        st = self.dev.get_state(1)
+        self.assertEqual(st["freq"], 2e6)
+        self.assertAlmostEqual(st["width"], 0.4 * 500e-9, delta=1e-9)
+
+    def test_frequency_change_with_a_requested_width(self):
+        self.t.ch[1]["PULS:WIDT"] = 9e-7
+        self.dev.set_pulse(1, freq=2e6, width=100e-9)
+        st = self.dev.get_state(1)
+        self.assertEqual(st["freq"], 2e6)
+        self.assertAlmostEqual(st["width"], 100e-9, delta=1e-9)
+
+    def test_lowering_the_frequency_does_not_touch_the_width(self):
+        self.dev.set_pulse(1, freq=0.5e6)
+        self.assertAlmostEqual(self.dev.get_state(1)["width"], 1e-7, delta=1e-9)
+        self.assertFalse([c for c in self.t.log if "PULS:WIDT" in c])
 
     def test_align_phase_emulated_restores_outputs(self):
         self.t.ch[1]["OUTP"] = "1"

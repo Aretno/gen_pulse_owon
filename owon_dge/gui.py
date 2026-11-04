@@ -172,8 +172,18 @@ class PulseGeneratorPanel(QWidget):
     def apply(self):
         ch, func = self.channel, self.func.currentData()
         wanted = PARAMS.get(func, PARAMS["PULS"])
-        vals = {n: sp.value() * k for n, (sp, k) in self.spins.items()
-                if n in wanted}
+        state = self.last_state or {}
+        vals = {}
+        for n, (sp, k) in self.spins.items():
+            if n not in wanted:
+                continue
+            # Solo lo que ha cambiado (a la resolución mostrada): menos
+            # escrituras y no se pelea con parámetros ligados (anchura/frecuencia).
+            current = state.get(n)
+            if (current is not None and state.get("function") == func
+                    and abs(sp.value() - current / k) < 0.5 * 10 ** -sp.decimals()):
+                continue
+            vals[n] = sp.value() * k
         # La forma de onda se manda siempre: tras reiniciar el equipo puede
         # decir PULS y emitir un nivel continuo hasta que se reescribe.
         vals["function"] = func

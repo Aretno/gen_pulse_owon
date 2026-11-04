@@ -18,19 +18,94 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QComboBox,
 
 from .device import FUNCTIONS, PARAMS
 
-# campo -> (etiqueta, unidad mostrada, factor a SI, mín, máx, decimales)
+_TIME = (("ns", 1e-9), ("µs", 1e-6), ("ms", 1e-3), ("s", 1.0))
+# campo -> (etiqueta, unidades (nombre, factor a SI), mín SI, máx SI, decimales)
 FIELDS = {
-    "freq": ("Frecuencia", "MHz", 1e6, 0.0, 70.0, 6),
-    "width": ("Anchura", "ns", 1e-9, 0.0, 1e9, 3),
-    "high": ("Nivel alto", "V", 1.0, -10.0, 10.0, 3),
-    "low": ("Nivel bajo", "V", 1.0, -10.0, 10.0, 3),
-    "lead": ("Flanco subida", "ns", 1e-9, 0.0, 1e9, 3),
-    "trail": ("Flanco bajada", "ns", 1e-9, 0.0, 1e9, 3),
-    "symmetry": ("Simetría", "%", 1.0, 0.0, 100.0, 1),
-    "phase": ("Fase", "°", 1.0, 0.0, 360.0, 2),
+    "freq": ("Frecuencia", (("Hz", 1.0), ("kHz", 1e3), ("MHz", 1e6)),
+             1e-3, 70e6, 6),
+    "width": ("Anchura", _TIME, 0.0, 1e3, 6),
+    "high": ("Nivel alto", (("mV", 1e-3), ("V", 1.0)), -10.0, 10.0, 4),
+    "low": ("Nivel bajo", (("mV", 1e-3), ("V", 1.0)), -10.0, 10.0, 4),
+    "lead": ("Flanco subida", _TIME, 0.0, 1e3, 6),
+    "trail": ("Flanco bajada", _TIME, 0.0, 1e3, 6),
+    "symmetry": ("Simetría", (("%", 1.0),), 0.0, 100.0, 1),
+    "phase": ("Fase", (("°", 1.0),), 0.0, 360.0, 2),
 }
 FIELD_ORDER = ("freq", "width", "symmetry", "high", "low", "lead", "trail",
                "phase")
+
+
+def best_unit(units, value_si: float) -> int:
+    """Índice de la unidad más grande en la que el valor es ≥ 1 (o la menor)."""
+    best = 0
+    for index, (_name, factor) in enumerate(units):
+        if abs(value_si) >= factor * (1 - 1e-12):
+            best = index
+    return best
+
+
+class _Field:
+    """Un parámetro editable: cuadro numérico + selector de unidades."""
+
+    def __init__(self, name, panel):
+        label, units, lo, hi, decimals = FIELDS[name]
+        self.name, self.units, self.lo, self.hi = name, units, lo, hi
+        self.pinned = False          # el usuario eligió la unidad: no cambiarla sola
+        self.spin = QDoubleSpinBox(decimals=decimals)
+        self.spin.setKeyboardTracking(False)
+        # Paso proporcional al valor: se puede bajar sin saltar a 0.
+        self.spin.setStepType(
+            QDoubleSpinBox.StepType.AdaptiveDecimalStepType)
+        self.combo = QComboBox()
+        for unit_name, _factor in units:
+            self.combo.addItem(unit_name)
+        self.combo.setVisible(len(units) > 1)
+        self.combo.setToolTip("Unidad en que se muestra y se escribe")
+        self.widget = QWidget()
+        row = QHBoxLayout(self.widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.spin, 1)
+        row.addWidget(self.combo)
+        self._apply_range()
+        self.spin.valueChanged.connect(lambda *_: setattr(panel, "edit", True))
+        self.combo.activated.connect(self._unit_picked)
+
+    @property
+    def factor(self) -> float:
+        return self.units[self.combo.currentIndex()][1]
+
+    def _apply_range(self):
+        k = self.factor
+        self.spin.blockSignals(True)
+        self.spin.setRange(self.lo / k, self.hi / k)
+        self.spin.blockSignals(False)
+        self._shown_factor = k       # unidad en la que está el valor mostrado
+
+    def _unit_picked(self, _index):
+        """Cambia de unidad conservando el valor (en SI)."""
+        self.pinned = True
+        value_si = self.spin.value() * self._shown_factor   # antes del cambio
+        self._apply_range()
+        self.set_si(value_si, keep_unit=True)
+
+    def si(self) -> float:
+        return self.spin.value() * self._shown_factor
+
+    def set_si(self, value_si: float, *, keep_unit: bool = False):
+        self.spin.blockSignals(True)
+        if not self.pinned and not keep_unit:
+            self.combo.setCurrentIndex(best_unit(self.units, value_si))
+            self._apply_range()
+        self.spin.setValue(value_si / self.factor)
+        self.spin.blockSignals(False)
+
+    def unchanged(self, current_si) -> bool:
+        """¿El valor mostrado es el del equipo (a la resolución mostrada)?"""
+        if current_si is None:
+            return False
+        tolerance = 0.5 * 10 ** -self.spin.decimals() * self.factor
+        return abs(self.si() - current_si) <= max(tolerance, 1e-9 * abs(current_si))
+
 
 class _Worker(QObject):
     """Ejecuta las llamadas al backend fuera del hilo de la GUI."""
@@ -102,14 +177,10 @@ class PulseGeneratorPanel(QWidget):
         form.addRow("Tipo", self.func)
         self.spins, self._labels = {}, {}
         for name in FIELD_ORDER:
-            label, unit, k, mn, mx, dec = FIELDS[name]
-            sp = QDoubleSpinBox(decimals=dec, minimum=mn, maximum=mx,
-                                suffix=f" {unit}")
-            sp.setKeyboardTracking(False)
-            sp.valueChanged.connect(lambda *_: setattr(self, "edit", True))
-            self.spins[name] = (sp, k)
-            self._labels[name] = QLabel(label)
-            form.addRow(self._labels[name], sp)
+            field = _Field(name, self)
+            self.spins[name] = field
+            self._labels[name] = QLabel(FIELDS[name][0])
+            form.addRow(self._labels[name], field.widget)
         self.duty_label = QLabel("Ciclo de trabajo")
         self.duty = QLabel("—")
         form.addRow(self.duty_label, self.duty)
@@ -134,9 +205,9 @@ class PulseGeneratorPanel(QWidget):
         """Muestra solo los parámetros que tiene la forma de onda."""
         self._function = func
         wanted = PARAMS.get(func, PARAMS["PULS"])
-        for name, (sp, _k) in self.spins.items():
+        for name, field in self.spins.items():
             visible = name in wanted
-            sp.setVisible(visible)
+            field.widget.setVisible(visible)
             self._labels[name].setVisible(visible)
         self.duty.setVisible("duty" in wanted)
         self.duty_label.setVisible("duty" in wanted)
@@ -174,16 +245,14 @@ class PulseGeneratorPanel(QWidget):
         wanted = PARAMS.get(func, PARAMS["PULS"])
         state = self.last_state or {}
         vals = {}
-        for n, (sp, k) in self.spins.items():
+        for n, field in self.spins.items():
             if n not in wanted:
                 continue
             # Solo lo que ha cambiado (a la resolución mostrada): menos
             # escrituras y no se pelea con parámetros ligados (anchura/frecuencia).
-            current = state.get(n)
-            if (current is not None and state.get("function") == func
-                    and abs(sp.value() - current / k) < 0.5 * 10 ** -sp.decimals()):
+            if state.get("function") == func and field.unchanged(state.get(n)):
                 continue
-            vals[n] = sp.value() * k
+            vals[n] = field.si()
         # La forma de onda se manda siempre: tras reiniciar el equipo puede
         # decir PULS y emitir un nivel continuo hasta que se reescribe.
         vals["function"] = func
@@ -214,11 +283,9 @@ class PulseGeneratorPanel(QWidget):
         self.out.setText("Salida: ON" if s["output"] else "Salida: OFF")
         if not self.edit or tag != "state":
             self._show_function(s.get("function") or "PULS")
-            for n, (sp, k) in self.spins.items():
+            for n, field in self.spins.items():
                 if s.get(n) is not None:
-                    sp.blockSignals(True)
-                    sp.setValue(s[n] / k)
-                    sp.blockSignals(False)
+                    field.set_si(s[n])
             self.edit = False
         self.duty.setText("—" if s.get("duty") is None
                           else f"{s['duty']:.2f} %")

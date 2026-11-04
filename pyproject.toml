@@ -1,0 +1,17 @@
+[project]
+name = "owon-dge"
+version = "0.1.0"
+description = "Control del generador de pulsos OWON DGE2070 (USB/SCPI) con API HTTP y panel PyQt6"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+usb = ["pyusb>=1.2"]
+gui = ["PyQt6>=6.7"]
+
+[project.scripts]
+owon-dge-server = "owon_dge.server:main"
+owon-dge-gui = "owon_dge.gui:main"
+
+[tool.setuptools]
+packages = ["owon_dge"]

@@ -1,0 +1,2 @@
+# OWON DGE series function/pulse generator (USB bulk SCPI)
+SUBSYSTEM=="usb", ATTR{idVendor}=="5345", ATTR{idProduct}=="1234", MODE="0666", TAG+="uaccess"

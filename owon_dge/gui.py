@@ -121,13 +121,8 @@ class PulseGeneratorPanel(QWidget):
         apply_.clicked.connect(self.apply)
         reread = QPushButton("Leer del equipo")
         reread.clicked.connect(lambda: self.refresh(force=True))
-        self.sync_btn = QPushButton("Sincronizar CH1/CH2")
-        self.sync_btn.setToolTip("Alinea la fase de los dos canales (Align "
-                                 "Phase del equipo)")
-        self.sync_btn.clicked.connect(self.sync)
         btns.addWidget(apply_)
         btns.addWidget(reread)
-        btns.addWidget(self.sync_btn)
         lay.addLayout(btns)
         self.status = QLabel("")
         self.status.setWordWrap(True)
@@ -189,14 +184,6 @@ class PulseGeneratorPanel(QWidget):
         if self._submit(job, "apply"):
             self.status.setText("Aplicando…")
 
-    def sync(self):
-        def job():
-            method = self.backend.align_phase()
-            self.status_text = f"Canales sincronizados ({method})"
-            return self.backend.get_state(self.channel)
-        if self._submit(job, "sync"):
-            self.status.setText("Sincronizando…")
-
     def _toggle_out(self, on):
         ch = self.channel
 
@@ -227,8 +214,6 @@ class PulseGeneratorPanel(QWidget):
                           else f"{s['duty']:.2f} %")
         if tag == "apply":
             self.status.setText("Aplicado")
-        elif tag == "sync":
-            self.status.setText(getattr(self, "status_text", "Sincronizado"))
         elif tag != "state":
             self.status.setText("")
         self.stateRead.emit(s)

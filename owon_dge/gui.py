@@ -174,9 +174,9 @@ class PulseGeneratorPanel(QWidget):
         wanted = PARAMS.get(func, PARAMS["PULS"])
         vals = {n: sp.value() * k for n, (sp, k) in self.spins.items()
                 if n in wanted}
-        # La forma de onda solo se manda si cambia (la lectura previa manda).
-        if func != (self.last_state or {}).get("function"):
-            vals["function"] = func
+        # La forma de onda se manda siempre: tras reiniciar el equipo puede
+        # decir PULS y emitir un nivel continuo hasta que se reescribe.
+        vals["function"] = func
 
         def job():
             self.backend.set_pulse(ch, **vals)

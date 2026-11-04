@@ -35,7 +35,7 @@ PARAMS = {
     "RAMP": ("freq", "symmetry", "high", "low", "phase"),
     "PRN": ("high", "low"),
 }
-_TOL_FLOOR = {"phase": 0.05, "symmetry": 0.05}
+_TOL_FLOOR = {"phase": 1.0, "symmetry": 0.05}   # la fase va en grados enteros
 
 
 def canonical_function(raw) -> str:

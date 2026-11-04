@@ -36,5 +36,6 @@ class RemoteDge2070:
     def set_pulse(self, ch=1, **kw): self._call("PUT", f"/api/channels/{ch}", kw)
     def set_output(self, ch, on): self._call("POST", f"/api/channels/{ch}/output", {"on": on})
     def raw(self, cmd, query=None): return self._call("POST", "/api/raw", {"cmd": cmd, "query": query})["reply"]
+    def align_phase(self): return self._call("POST", "/api/align", {})["method"]
     def read_waveform(self): return self._call("GET", "/api/waveform")["points"]
     def close(self): pass

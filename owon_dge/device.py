@@ -4,6 +4,7 @@ Todas las magnitudes en unidades SI (Hz, V, s). Los canales son 1 o 2.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -18,7 +19,32 @@ _FIELDS = {
     "lead":  ("PULS:TRAN:LEAD", float),
     "trail": ("PULS:TRAN:TRA", float),
 }
+# Magnitudes que no son un simple "SOUR<n>:<cmd>" en SI: simetría de la rampa
+# (%) y fase (el equipo la devuelve en rad; aquí se usan grados).
+_FIELDS["symmetry"] = ("FUNC:RAMP:SYMM", float)
+_FIELDS["phase"] = ("PHAS:ADJ", float)
 SETTABLE = tuple(_FIELDS) + ("duty",)
+
+# Formas de onda del equipo y los parámetros que tiene cada una.
+FUNCTIONS = {"SIN": "Seno", "SQU": "Cuadrada", "PULS": "Pulso",
+             "RAMP": "Rampa", "PRN": "Ruido"}
+PARAMS = {
+    "SIN": ("freq", "high", "low", "phase"),
+    "SQU": ("freq", "high", "low", "phase"),
+    "PULS": ("freq", "width", "duty", "high", "low", "lead", "trail", "phase"),
+    "RAMP": ("freq", "symmetry", "high", "low", "phase"),
+    "PRN": ("high", "low"),
+}
+_TOL_FLOOR = {"phase": 0.05, "symmetry": 0.05}
+
+
+def canonical_function(raw) -> str:
+    """'PUL', 'PULSe', 'pulse'… -> 'PULS' (clave de FUNCTIONS); '' si no se conoce."""
+    head = str(raw or "").strip().upper()[:3]
+    for key in FUNCTIONS:
+        if key.startswith(head) and head:
+            return key
+    return ""
 
 
 _TIME_FIELDS = {"width", "lead", "trail"}
@@ -33,6 +59,8 @@ def _fmt(name: str, value: float) -> str:
     value = float(value)
     if name in _TIME_FIELDS:
         return f"{value * 1e9:.6f}".rstrip("0").rstrip(".") + "ns"
+    if name == "phase":
+        return f"{value:.6g}DEG"
     return f"{value:.9g}"
 
 
@@ -76,13 +104,20 @@ class Dge2070:
             if not hasattr(self, "_idn"):
                 self._idn = self.idn()
             s = {"channel": ch, "idn": self._idn}
-            s["function"] = q(f"SOUR{ch}:FUNC:SHAP?")
+            s["function"] = canonical_function(q(f"SOUR{ch}:FUNC:SHAP?"))
+            wanted = PARAMS.get(s["function"], PARAMS["PULS"])
             for name, (cmd, typ) in _FIELDS.items():
+                s[name] = None
+                if name not in wanted:      # las consultas no válidas dan timeout
+                    continue
                 try:
                     s[name] = typ(q(f"SOUR{ch}:{cmd}?"))
                 except DeviceError:
                     s[name] = None
-            s["duty"] = float(q(f"SOUR{ch}:PULS:DCYC?"))
+            if s["phase"] is not None:
+                s["phase"] = math.degrees(s["phase"])
+            s["duty"] = (float(q(f"SOUR{ch}:PULS:DCYC?"))
+                         if "duty" in wanted else None)
             s["period"] = 1.0 / s["freq"] if s["freq"] else None
             s["output"] = q(f"OUTP{ch}?") in ("1", "ON")
             s["impedance"] = q(f"OUTP{ch}:IMP?")
@@ -93,28 +128,61 @@ class Dge2070:
             return s
 
     # --- escritura
+    def set_function(self, ch: int, function: str):
+        """Cambia la forma de onda (clave de FUNCTIONS) y lo verifica."""
+        ch = self._ch(ch)
+        func = canonical_function(function)
+        if not func or str(function).strip().upper()[:3] != func[:3]:
+            raise ValueError(f"forma de onda desconocida: {function!r}")
+        with self._lock:
+            for _attempt in range(3):
+                time.sleep(self.t.settle_s)
+                self.t.write(f"SOUR{ch}:FUNC:SHAP {func}")
+                time.sleep(self.t.settle_s)
+                try:
+                    got = canonical_function(self.t.query(f"SOUR{ch}:FUNC:SHAP?"))
+                except DeviceError:
+                    continue
+                if got == func:
+                    return
+            raise DeviceError(f"function: pedido {func}, el equipo tiene {got!r}")
+
     def set_pulse(self, ch: int = 1, **kw):
-        """Fija parámetros: freq/period, width o duty, high, low, lead, trail."""
+        """Fija parámetros: function, freq/period, width o duty, high, low, lead,
+        trail, symmetry (rampa) y phase (grados); sólo los de la forma de onda."""
         ch = self._ch(ch)
         if "period" in kw:
             p = kw.pop("period")
             if p is None or p <= 0:
                 raise ValueError("period debe ser > 0")
             kw["freq"] = 1.0 / p
+        function = kw.pop("function", None)
         bad = set(kw) - set(SETTABLE)
         if bad:
             raise ValueError(f"parámetros desconocidos: {sorted(bad)}")
         if "width" in kw and "duty" in kw:
             raise ValueError("usa width o duty, no ambos")
         with self._lock:
+            if function:
+                self.set_function(ch, function)
+                func = canonical_function(function)
+            else:
+                func = canonical_function(self.t.query(f"SOUR{ch}:FUNC:SHAP?"))
+            if kw and func:
+                invalid = sorted(set(kw) - set(PARAMS[func]))
+                if invalid:
+                    raise ValueError(
+                        f"{invalid} no existe(n) en la forma de onda {func}")
             # Notas del firmware (medidas en el equipo):
             #  - SYST:ERR? es pegajoso/no fiable -> se verifica releyendo.
             #  - Un comando justo tras *CLS se pierde -> no usar *CLS.
             #  - Tras escribir hay que dejar respirar al USB (SETTLE_S).
-            for name in ["freq", "width", "duty", "high", "low", "lead", "trail"]:
+            for name in ["freq", "width", "duty", "symmetry", "phase", "high",
+                         "low", "lead", "trail"]:
                 if name not in kw:
                     continue
                 cmd = "PULS:DCYC" if name == "duty" else _FIELDS[name][0]
+                tol = _TOL_FLOOR.get(name, 1e-12)
                 for attempt in range(3):   # el equipo a veces pierde una escritura
                     time.sleep(self.t.settle_s)
                     self.t.write(f"SOUR{ch}:{cmd} {_fmt(name, kw[name])}")
@@ -122,7 +190,8 @@ class Dge2070:
                     if name == "duty":
                         break
                     got = self._read_field(ch, name)
-                    if got is not None and abs(got - kw[name]) <= 1e-3 * max(abs(kw[name]), 1e-12):
+                    if got is not None and abs(got - kw[name]) <= max(
+                            1e-3 * abs(kw[name]), tol):
                         break
                 else:
                     if name == "width" and self._width_via_duty(ch, kw):
@@ -144,10 +213,37 @@ class Dge2070:
     def _read_field(self, ch, name, tries=3):
         for _ in range(tries):
             try:
-                return _FIELDS[name][1](self.t.query(f"SOUR{ch}:{_FIELDS[name][0]}?"))
+                value = _FIELDS[name][1](self.t.query(f"SOUR{ch}:{_FIELDS[name][0]}?"))
+                return math.degrees(value) if name == "phase" else value
             except DeviceError:
                 time.sleep(self.t.settle_s)
         return None
+
+    # SCPI que alinea la fase de los dos canales (el «Align Phase» del panel
+    # frontal), si el equipo lo admite; vacío = se emula.
+    ALIGN_COMMANDS: tuple = ()
+
+    def align_phase(self) -> str:
+        """Sincroniza temporalmente CH1 y CH2; devuelve el método usado."""
+        with self._lock:
+            if self.ALIGN_COMMANDS:
+                for cmd in self.ALIGN_COMMANDS:
+                    self.t.write(cmd)
+                    time.sleep(self.t.settle_s)
+                return "scpi"
+            # Emulación: fase 0 en los dos canales con las salidas apagadas y
+            # reencendidas a la vez, de modo que arranquen juntos.
+            states = [self.get_state(ch) for ch in (1, 2)]
+            for st in states:
+                self.t.write(f"OUTP{st['channel']} OFF")
+            time.sleep(self.t.settle_s)
+            for st in states:
+                if st.get("phase") is not None:
+                    self.set_pulse(st["channel"], phase=0.0)
+            for st in states:
+                self.t.write(f"OUTP{st['channel']} {'ON' if st['output'] else 'OFF'}")
+            time.sleep(self.t.settle_s)
+            return "emulado"
 
     def set_output(self, ch: int, on: bool):
         self.t.write(f"OUTP{self._ch(ch)} {'ON' if on else 'OFF'}")

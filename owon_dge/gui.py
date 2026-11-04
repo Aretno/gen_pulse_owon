@@ -68,7 +68,16 @@ class _Field:
         row.addWidget(self.combo)
         self._apply_range()
         self.spin.valueChanged.connect(lambda *_: setattr(panel, "edit", True))
+        # keyboardTracking está apagado: valueChanged solo salta al confirmar.
+        # Se marca "editando" ya con la primera tecla, para que la lectura
+        # periódica del equipo no pise lo que se está escribiendo.
+        self.spin.lineEdit().textEdited.connect(
+            lambda *_: setattr(panel, "edit", True))
         self.combo.activated.connect(self._unit_picked)
+
+    def editing(self) -> bool:
+        """¿Tiene el foco (se está escribiendo o ajustando con las flechas)?"""
+        return self.spin.hasFocus() or self.spin.lineEdit().hasFocus()
 
     @property
     def factor(self) -> float:
@@ -191,7 +200,7 @@ class PulseGeneratorPanel(QWidget):
         apply_ = QPushButton("Aplicar")
         apply_.clicked.connect(self.apply)
         reread = QPushButton("Leer del equipo")
-        reread.clicked.connect(lambda: self.refresh(force=True))
+        reread.clicked.connect(self.reload)
         btns.addWidget(apply_)
         btns.addWidget(reread)
         lay.addLayout(btns)
@@ -235,10 +244,17 @@ class PulseGeneratorPanel(QWidget):
         self.refresh(force=True)
 
     def refresh(self, force=False):
-        if self.edit and not force:
+        if not force and (self.edit or any(
+                f.editing() for f in self.spins.values())):
             return   # no pisar lo que el usuario está escribiendo
         ch = self.channel
         self._submit(lambda: self.backend.get_state(ch), "state")
+
+    def reload(self):
+        """«Leer del equipo»: descarta lo escrito sin aplicar y vuelve a leer."""
+        self.edit = False
+        ch = self.channel
+        self._submit(lambda: self.backend.get_state(ch), "reload")
 
     def apply(self):
         ch, func = self.channel, self.func.currentData()
@@ -281,10 +297,14 @@ class PulseGeneratorPanel(QWidget):
         self.idn.setText(s["idn"])
         self.out.setChecked(s["output"])
         self.out.setText("Salida: ON" if s["output"] else "Salida: OFF")
-        if not self.edit or tag != "state":
+        # Los campos solo se rellenan con lo leído si no hay cambios sin aplicar
+        # (o si acaba de aplicarse), y nunca el que tiene el foco: así ni la
+        # lectura periódica ni «Salida» pisan lo que se está escribiendo.
+        if tag in ("apply", "reload") or not self.edit:
             self._show_function(s.get("function") or "PULS")
             for n, field in self.spins.items():
-                if s.get(n) is not None:
+                if s.get(n) is not None and (tag in ("apply", "reload")
+                                             or not field.editing()):
                     field.set_si(s[n])
             self.edit = False
         self.duty.setText("—" if s.get("duty") is None

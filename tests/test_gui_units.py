@@ -1,6 +1,7 @@
 """Unidades elegibles del panel (sin equipo)."""
 import os
 import unittest
+import unittest.mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -126,6 +127,64 @@ class UnitsTests(unittest.TestCase):
         panel.apply()
         self.wait(panel)
         self.assertEqual(set(backend.calls[-1]), {"function"})
+
+    # -- la lectura del equipo no pisa lo que se está escribiendo -----------
+    def test_typing_marks_the_panel_as_editing_and_blocks_the_poll(self):
+        panel, backend = self.make()
+        backend.state["freq"] = 2e6                  # el equipo cambió por su cuenta
+        f = panel.spins["freq"]
+        f.spin.lineEdit().textEdited.emit("0,5")     # primera tecla, sin confirmar
+        self.assertTrue(panel.edit)
+        panel.refresh()                              # lectura periódica
+        self.wait(panel)
+        self.assertAlmostEqual(f.spin.value(), 1.0)  # no se tocó
+        self.assertEqual(f.combo.currentText(), "MHz")
+
+    def test_a_read_arriving_while_typing_does_not_overwrite(self):
+        panel, backend = self.make()
+        f = panel.spins["freq"]
+        f.spin.setValue(0.25)
+        panel.edit = False                           # nada confirmado todavía
+        backend.state["freq"] = 3e6
+        with unittest.mock.patch.object(type(f), "editing", lambda self: True):
+            panel.refresh(force=True)
+            self.wait(panel)
+        self.assertAlmostEqual(f.spin.value(), 0.25)
+
+    def test_output_toggle_keeps_unapplied_edits(self):
+        panel, backend = self.make()
+        f = panel.spins["width"]
+        f.spin.setValue(500.0)                       # cambio sin aplicar
+        self.assertTrue(panel.edit)
+        panel.out.setChecked(False)
+        panel._toggle_out(False)
+        self.wait(panel)
+        self.assertAlmostEqual(f.spin.value(), 500.0)
+        self.assertTrue(panel.edit)
+
+    def test_apply_does_refresh_every_field_from_the_device(self):
+        panel, backend = self.make()
+        panel.spins["width"].spin.setValue(500.0)    # 500 ns
+        panel.apply()
+        self.wait(panel)
+        self.assertFalse(panel.edit)
+        self.assertAlmostEqual(panel.spins["width"].si(), 5e-7)
+
+    def test_read_from_device_discards_unapplied_edits(self):
+        panel, backend = self.make()
+        panel.spins["freq"].spin.setValue(0.3)
+        self.assertTrue(panel.edit)
+        panel.reload()
+        self.wait(panel)
+        self.assertFalse(panel.edit)
+        self.assertAlmostEqual(panel.spins["freq"].si(), 1e6)
+
+    def test_idle_panel_still_follows_the_device(self):
+        panel, backend = self.make()
+        backend.state["freq"] = 2e6
+        panel.refresh()
+        self.wait(panel)
+        self.assertAlmostEqual(panel.spins["freq"].si(), 2e6)
 
     def test_each_time_field_can_use_ns_us_ms_s(self):
         panel, backend = self.make()

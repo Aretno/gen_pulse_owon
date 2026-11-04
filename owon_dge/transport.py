@@ -12,6 +12,8 @@ class DeviceError(RuntimeError):
 
 
 class UsbTransport:
+    settle_s = 0.3    # el modo PC pierde escrituras si se encadenan deprisa
+
     def __init__(self, serial: str | None = None, timeout_ms: int = 500):
         self.serial = serial
         self.timeout_ms = timeout_ms
@@ -88,3 +90,12 @@ class UsbTransport:
                 self.close()
                 raise DeviceError(f"Error USB: {e}")
             return data.decode(errors="replace").strip()
+
+
+def auto_transport(serial: str | None = None):
+    """Elige el transporte según el modo USB del generador (TMC si está)."""
+    import usb.core
+    from .tmc import PID as TMC_PID, UsbTmcTransport
+    if usb.core.find(idVendor=VID, idProduct=TMC_PID) is not None:
+        return UsbTmcTransport(serial)
+    return UsbTransport(serial)

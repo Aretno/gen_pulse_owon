@@ -10,6 +10,7 @@ Endpoints:
   GET  /api/channels/<n>            estado completo
   PUT  /api/channels/<n>            {"freq":..,"width":..,"high":..,...}
   POST /api/channels/<n>/output     {"on": true}
+  GET  /api/waveform                memoria de edición (8192 pts, solo modo TMC)
   POST /api/raw                     {"cmd": "SOUR1:FREQ?"}
 """
 from __future__ import annotations
@@ -55,6 +56,8 @@ def make_handler(dev: Dge2070, token: str | None):
                 if method == "POST" and m and m.group(2):
                     dev.set_output(int(m.group(1)), bool(self._body()["on"]))
                     return self._send(200, dev.get_state(int(m.group(1))))
+                if method == "GET" and path == "/api/waveform":
+                    return self._send(200, {"points": dev.read_waveform()})
                 if method == "POST" and path == "/api/raw":
                     b = self._body()
                     return self._send(200, {"reply": dev.raw(b["cmd"], b.get("query"))})

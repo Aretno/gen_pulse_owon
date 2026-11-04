@@ -7,7 +7,7 @@ from __future__ import annotations
 import threading
 import time
 
-from .transport import DeviceError, UsbTransport
+from .transport import DeviceError, UsbTransport, auto_transport
 
 # campo -> (comando de lectura/escritura, tipo)
 _FIELDS = {
@@ -18,7 +18,6 @@ _FIELDS = {
     "lead":  ("PULS:TRAN:LEAD", float),
     "trail": ("PULS:TRAN:TRA", float),
 }
-SETTLE_S = 0.3
 SETTABLE = tuple(_FIELDS) + ("duty",)
 
 
@@ -38,8 +37,8 @@ def _fmt(name: str, value: float) -> str:
 
 
 class Dge2070:
-    def __init__(self, transport: UsbTransport | None = None):
-        self.t = transport or UsbTransport()
+    def __init__(self, transport=None):
+        self.t = transport or auto_transport()
         self._lock = threading.RLock()
 
     # --- bajo nivel
@@ -49,6 +48,16 @@ class Dge2070:
     def raw(self, cmd: str, query: bool | None = None) -> str | None:
         query = cmd.strip().endswith("?") if query is None else query
         return self.t.query(cmd) if query else (self.t.write(cmd) or None)
+
+    def read_waveform(self) -> list[int]:
+        """Memoria de edición: 8192 puntos de 14 bit (0..16383). Sólo en modo TMC."""
+        import struct
+        if not hasattr(self.t, "query_bytes"):
+            raise DeviceError("read_waveform requiere el modo USB TMC")
+        d = self.t.query_bytes("DATA:DATA? EMEMory")
+        n = int(d[2:2 + int(d[1:2])])
+        off = 2 + int(d[1:2])
+        return list(struct.unpack(f">{n // 2}H", d[off:off + n]))
 
     def errors(self) -> str:
         return self.t.query("SYST:ERR?")
@@ -107,9 +116,9 @@ class Dge2070:
                     continue
                 cmd = "PULS:DCYC" if name == "duty" else _FIELDS[name][0]
                 for attempt in range(3):   # el equipo a veces pierde una escritura
-                    time.sleep(SETTLE_S)
+                    time.sleep(self.t.settle_s)
                     self.t.write(f"SOUR{ch}:{cmd} {_fmt(name, kw[name])}")
-                    time.sleep(SETTLE_S)
+                    time.sleep(self.t.settle_s)
                     if name == "duty":
                         break
                     got = self._read_field(ch, name)
@@ -128,7 +137,7 @@ class Dge2070:
         if not freq:
             return False
         self.t.write(f"SOUR{ch}:PULS:DCYC {kw['width'] * freq * 100:.6g}")
-        time.sleep(SETTLE_S)
+        time.sleep(self.t.settle_s)
         got = self._read_field(ch, "width")
         return got is not None and abs(got - kw["width"]) <= 1e-3 * kw["width"]
 
@@ -137,12 +146,12 @@ class Dge2070:
             try:
                 return _FIELDS[name][1](self.t.query(f"SOUR{ch}:{_FIELDS[name][0]}?"))
             except DeviceError:
-                time.sleep(SETTLE_S)
+                time.sleep(self.t.settle_s)
         return None
 
     def set_output(self, ch: int, on: bool):
         self.t.write(f"OUTP{self._ch(ch)} {'ON' if on else 'OFF'}")
-        time.sleep(SETTLE_S)
+        time.sleep(self.t.settle_s)
 
     def close(self):
         self.t.close()

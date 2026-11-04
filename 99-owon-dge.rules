@@ -1,2 +1,4 @@
-# OWON DGE series function/pulse generator (USB bulk SCPI)
+# OWON DGE series: modo "PC" (5345:1234, bulk SCPI via pyusb) y modo "USB TMC" (5345:1235)
 SUBSYSTEM=="usb", ATTR{idVendor}=="5345", ATTR{idProduct}=="1234", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="5345", ATTR{idProduct}=="1235", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usbmisc", KERNEL=="usbtmc*", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1235", MODE="0666", TAG+="uaccess"
